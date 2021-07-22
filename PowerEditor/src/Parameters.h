@@ -26,8 +26,23 @@
 #include "shortcut.h"
 #include "ContextMenu.h"
 #include "dpiManager.h"
+#include "NppDarkMode.h"
 #include <assert.h>
 #include <tchar.h>
+#include <map>
+
+#ifdef _WIN64
+
+#ifdef _M_ARM64
+#define ARCH_TYPE IMAGE_FILE_MACHINE_ARM64
+#else
+#define ARCH_TYPE IMAGE_FILE_MACHINE_AMD64
+#endif
+
+#else
+#define ARCH_TYPE IMAGE_FILE_MACHINE_I386
+
+#endif
 
 class NativeLangSpeaker;
 
@@ -223,6 +238,7 @@ struct CmdLineParams
 
 	LangType _langType = L_EXTERNAL;
 	generic_string _localizationPath;
+	generic_string _udlName;
 
 	generic_string _easterEggName;
 	unsigned char _quoteType = '\0';
@@ -254,6 +270,7 @@ struct CmdLineParamsDTO
 	int _pos2go = 0;
 
 	LangType _langType = L_EXTERNAL;
+	generic_string _udlName;
 
 	static CmdLineParamsDTO FromCmdLineParams(const CmdLineParams& params)
 	{
@@ -269,7 +286,7 @@ struct CmdLineParamsDTO
 		dto._pos2go = params._pos2go;
 		
 		dto._langType = params._langType;
-
+		dto._udlName = params._udlName;
 		return dto;
 	}
 };
@@ -760,6 +777,12 @@ public:
 	bool _doDoubleQuotes = false;
 };
 
+struct DarkModeConf final
+{
+	bool _isEnabled = false;
+	NppDarkMode::ColorTone _colorTone = NppDarkMode::blackTone;
+	NppDarkMode::Colors _customColors = NppDarkMode::getDarkModeDefaultColors();
+};
 
 struct NppGUI final
 {
@@ -801,6 +824,7 @@ struct NppGUI final
 	bool _tabReplacedBySpace = false;
 
 	bool _finderLinesAreCurrentlyWrapped = false;
+	bool _finderPurgeBeforeEverySearch = false;
 
 	int _fileAutoDetection = cdEnabledNew;
 
@@ -815,6 +839,7 @@ struct NppGUI final
 	bool _rememberLastSession = true; // remember next session boolean will be written in the settings
 	bool _isCmdlineNosessionActivated = false; // used for if -nosession is indicated on the launch time
 	bool _detectEncoding = true;
+	bool _saveAllConfirm = true;
 	bool _setSaveDlgExtFiltToAllTypes = false;
 	bool _doTaskList = true;
 	bool _maitainIndent = true;
@@ -824,6 +849,9 @@ struct NppGUI final
 	bool _smartHiliteWordOnly = true;
 	bool _smartHiliteUseFindSettings = false;
 	bool _smartHiliteOnAnotherView = false;
+
+	bool _markAllCaseSensitive = false;
+	bool _markAllWordOnly = true;
 
 	bool _disableSmartHiliteTmp = false;
 	bool _enableTagsMatchHilite = true;
@@ -838,6 +866,7 @@ struct NppGUI final
 	bool _monospacedFontFindDlg = false;
 	bool _findDlgAlwaysVisible = false;
 	bool _confirmReplaceInAllOpenDocs = true;
+	bool _replaceStopsWithoutFindingNext = false;
 	bool _muteSounds = false;
 	writeTechnologyEngine _writeTechnologyEngine = defaultTechnology;
 	bool _isWordCharDefault = true;
@@ -907,6 +936,8 @@ struct NppGUI final
 
 	bool _isDocPeekOnTab = false;
 	bool _isDocPeekOnMap = false;
+
+	DarkModeConf _darkmode;
 };
 
 struct ScintillaViewParams
@@ -934,6 +965,22 @@ struct ScintillaViewParams
 	bool _disableAdvancedScrolling = false;
 	bool _doSmoothFont = false;
 	bool _showBorderEdge = true;
+
+	unsigned char _paddingLeft = 0;  // 0-9 pixel
+	unsigned char _paddingRight = 0; // 0-9 pixel
+
+	// distractionFreeDivPart is used for divising the fullscreen pixel width.
+	// the result of division will be the left & right padding in Distraction Free mode
+	unsigned char _distractionFreeDivPart = 4;     // 3-9 parts
+
+	int getDistractionFreePadding(int editViewWidth) const {
+		const int defaultDiviser = 4;
+		int diviser = _distractionFreeDivPart > 2 ? _distractionFreeDivPart : defaultDiviser;
+		int paddingLen = editViewWidth / diviser;
+		if (paddingLen <= 0)
+			paddingLen = editViewWidth / defaultDiviser;
+		return paddingLen;
+	};
 };
 
 const int NB_LIST = 20;
@@ -1233,40 +1280,34 @@ class ThemeSwitcher final
 friend class NppParameters;
 
 public:
-	void addThemeFromXml(const generic_string& xmlFullPath)
-	{
+	void addThemeFromXml(const generic_string& xmlFullPath) {
 		_themeList.push_back(std::pair<generic_string, generic_string>(getThemeFromXmlFileName(xmlFullPath.c_str()), xmlFullPath));
 	}
 
-	void addDefaultThemeFromXml(const generic_string& xmlFullPath)
-	{
-		_themeList.push_back(std::pair<generic_string, generic_string>(TEXT("Default (stylers.xml)"), xmlFullPath));
+	void addDefaultThemeFromXml(const generic_string& xmlFullPath) {
+		_themeList.push_back(std::pair<generic_string, generic_string>(_defaultThemeLabel, xmlFullPath));
 	}
 
 	generic_string getThemeFromXmlFileName(const TCHAR *fn) const;
 
-	generic_string getXmlFilePathFromThemeName(const TCHAR *themeName) const
-	{
+	generic_string getXmlFilePathFromThemeName(const TCHAR *themeName) const {
 		if (!themeName || themeName[0])
 			return generic_string();
 		generic_string themePath = _stylesXmlPath;
 		return themePath;
 	}
 
-	bool themeNameExists(const TCHAR *themeName)
-	{
+	bool themeNameExists(const TCHAR *themeName) {
 		for (size_t i = 0; i < _themeList.size(); ++i )
 		{
-			if (! (getElementFromIndex(i)).first.compare(themeName))
+			auto themeNameOnList = getElementFromIndex(i).first;
+			if (lstrcmp(themeName, themeNameOnList.c_str()) == 0)
 				return true;
 		}
 		return false;
 	}
 
-	size_t size() const
-	{
-		return _themeList.size();
-	}
+	size_t size() const { return _themeList.size(); }
 
 
 	std::pair<generic_string, generic_string> & getElementFromIndex(size_t index)
@@ -1275,8 +1316,32 @@ public:
 		return _themeList[index];
 	}
 
+	void setThemeDirPath(generic_string themeDirPath) { _themeDirPath = themeDirPath; }
+	generic_string getThemeDirPath() const { return _themeDirPath; }
+
+	generic_string getDefaultThemeLabel() const { return _defaultThemeLabel; }
+
+	generic_string getSavePathFrom(const generic_string& path) const {
+		const auto iter = _themeStylerSavePath.find(path);
+		if (iter == _themeStylerSavePath.end())
+		{
+			return TEXT("");
+		}
+		else
+		{
+			return iter->second;
+		}
+	};
+
+	void addThemeStylerSavePath(generic_string key, generic_string val) {
+		_themeStylerSavePath[key] = val;
+	};
+
 private:
 	std::vector<std::pair<generic_string, generic_string>> _themeList;
+	std::map<generic_string, generic_string> _themeStylerSavePath;
+	generic_string _themeDirPath;
+	const generic_string _defaultThemeLabel = TEXT("Default (stylers.xml)");
 	generic_string _stylesXmlPath;
 };
 
@@ -1327,14 +1392,14 @@ public:
 
 	bool load();
 	bool reloadLang();
-	bool reloadStylers(TCHAR *stylePath = nullptr);
+	bool reloadStylers(const TCHAR *stylePath = nullptr);
 	void destroyInstance();
 	generic_string getSettingsFolder();
 
 	bool _isTaskListRBUTTONUP_Active = false;
 	int L_END;
 
-	const NppGUI & getNppGUI() const {
+	NppGUI & getNppGUI() {
 		return _nppGUI;
 	}
 
@@ -1425,7 +1490,7 @@ public:
 	bool writeScintillaParams();
 	void createXmlTreeFromGUIParams();
 
-	void writeStyles(LexerStylerArray & lexersStylers, StyleArray & globalStylers);
+	generic_string writeStyles(LexerStylerArray & lexersStylers, StyleArray & globalStylers); // return "" if saving file succeeds, otherwise return the new saved file path
 	bool insertTabInfo(const TCHAR *langName, int tabInfo);
 
 	LexerStylerArray & getLStylerArray() {return _lexerStylerArray;};
@@ -1440,6 +1505,8 @@ public:
 	void setFontList(HWND hWnd);
 	bool isInFontList(const generic_string& fontName2Search) const;
 	const std::vector<generic_string>& getFontList() const { return _fontlist; }
+
+	HFONT getDefaultUIFont();
 
 	int getNbUserLang() const {return _nbUserLang;}
 	UserLangContainer & getULCFromIndex(size_t i) {return *_userLangArray[i];};
@@ -1503,6 +1570,9 @@ public:
 		_cmdLineParams = cmdLineParams;
 	}
 	const CmdLineParamsDTO & getCmdLineParams() const {return _cmdLineParams;};
+
+	const generic_string& getCmdLineString() const { return _cmdLineString; }
+	void setCmdLineString(const generic_string& str) { _cmdLineString = str; }
 
 	void setFileSaveDlgFilterIndex(int ln) {_fileSaveDlgFilterIndex = ln;};
 	int getFileSaveDlgFilterIndex() const {return _fileSaveDlgFilterIndex;};
@@ -1650,8 +1720,7 @@ public:
 	void setCloudChoice(const TCHAR *pathChoice);
 	void removeCloudChoice();
 	bool isCloudPathChanged() const;
-	bool isx64() const { return _isx64; };
-
+	int archType() const { return ARCH_TYPE; };
 	COLORREF getCurrentDefaultBgColor() const {
 		return _currentDefaultBgColor;
 	}
@@ -1671,6 +1740,16 @@ public:
 	void setCmdSettingsDir(const generic_string& settingsDir) {
 		_cmdSettingsDir = settingsDir;
 	};
+
+	void setTitleBarAdd(const generic_string& titleAdd)
+	{
+		_titleBarAdditional = titleAdd;
+	}
+
+	const generic_string& getTitleBarAdd() const
+	{
+		return _titleBarAdditional;
+	}
 
 	DPIManager _dpiManager;
 
@@ -1731,6 +1810,7 @@ private:
 	int _nbExternalLang = 0;
 
 	CmdLineParamsDTO _cmdLineParams;
+	generic_string _cmdLineString;
 
 	int _fileSaveDlgFilterIndex = -1;
 
@@ -1750,12 +1830,14 @@ private:
 	bool _isx64 = false; // by default 32-bit
 
 	generic_string _cmdSettingsDir;
+	generic_string _titleBarAdditional;
 
 public:
 	void setShortcutDirty() { _isAnyShortcutModified = true; };
 	void setAdminMode(bool isAdmin) { _isAdminMode = isAdmin; }
 	bool isAdmin() const { return _isAdminMode; }
 	bool regexBackward4PowerUser() const { return _findHistory._regexBackward4PowerUser; }
+	bool isSelectFgColorEnabled() const { return _isSelectFgColorEnabled; };
 
 private:
 	bool _isAnyShortcutModified = false;
@@ -1783,7 +1865,6 @@ private:
 	generic_string _shortcutsPath;
 	generic_string _contextMenuPath;
 	generic_string _sessionPath;
-	generic_string _blacklistPath;
 	generic_string _nppPath;
 	generic_string _userPath;
 	generic_string _stylerPath;
@@ -1818,6 +1899,8 @@ private:
 	generic_string _wingupDir;
 	bool _isElevationRequired = false;
 	bool _isAdminMode = false;
+
+	bool _isSelectFgColorEnabled = false;
 
 public:
 	generic_string getWingupFullPath() const { return _wingupFullPath; };

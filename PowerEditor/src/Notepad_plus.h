@@ -80,21 +80,25 @@ struct TaskListInfo;
 
 struct VisibleGUIConf final
 {
-	bool isPostIt = false;
-	bool isFullScreen = false;
+	bool _isPostIt = false;
+	bool _isFullScreen = false;
+	bool _isDistractionFree = false;
 
-	//Used by both views
-	bool isMenuShown = true;
-	//bool isToolbarShown;	//toolbar forcefully hidden by hiding rebar
-	DWORD_PTR preStyle = (WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN);
+	//Used by postit & fullscreen
+	bool _isMenuShown = true;
+	DWORD_PTR _preStyle = (WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN);
 
-	//used by postit only
-	bool isTabbarShown = true;
-	bool isAlwaysOnTop = false;
-	bool isStatusbarShown = true;
+	//used by postit
+	bool _isTabbarShown = true;
+	bool _isAlwaysOnTop = false;
+	bool _isStatusbarShown = true;
 
-	//used by fullscreen only
+	//used by fullscreen
 	WINDOWPLACEMENT _winPlace;
+
+	//used by distractionFree
+	bool _was2ViewModeOn = false;
+	std::vector<DockingCont*> _pVisibleDockingContainers;
 
 	VisibleGUIConf()
 	{
@@ -178,6 +182,7 @@ public:
 	bool fileCloseAllToRight();
 	bool fileCloseAllUnchanged();
 	bool fileSave(BufferID id = BUFFER_INVALID);
+	bool fileSaveAllConfirm();
 	bool fileSaveAll();
 	bool fileSaveSpecific(const generic_string& fileNameToSave);
 	bool fileSaveAs(BufferID id = BUFFER_INVALID, bool isSaveCopy = false);
@@ -259,6 +264,8 @@ public:
 	void minimizeDialogs();
 	void restoreMinimizeDialogs();
 
+	void refreshDarkMode();
+
 private:
 	Notepad_plus_Window *_pPublicInterface = nullptr;
     Window *_pMainWindow = nullptr;
@@ -292,6 +299,7 @@ private:
 	ToolBar	_toolBar;
 	IconList _docTabIconList;
 	IconList _docTabIconListAlt;
+	IconList _docTabIconListDarkMode;
 
     StatusBar _statusBar;
 	bool _toReduceTabBar = false;
@@ -333,10 +341,11 @@ private:
 	// make sure we don't recursively call doClose when closing the last file with -quitOnEmpty
 	bool _isAttemptingCloseOnQuit = false;
 
-	// For FullScreen/PostIt features
+	// For FullScreen/PostIt/DistractionFree features
 	VisibleGUIConf	_beforeSpecialView;
 	void fullScreenToggle();
 	void postItToggle();
+	void distractionFreeToggle();
 
 	// Keystroke macro recording and playback
 	Macro _macro;
@@ -429,11 +438,11 @@ private:
 		return _activeView;
 	}
 
-	int otherView(){
+	int otherView() {
 		return (_activeView == MAIN_VIEW?SUB_VIEW:MAIN_VIEW);
 	}
 
-	int otherFromView(int whichOne){
+	int otherFromView(int whichOne) {
 		return (whichOne == MAIN_VIEW?SUB_VIEW:MAIN_VIEW);
 	}
 
@@ -499,32 +508,28 @@ private:
 
 	void addHotSpot(ScintillaEditView* view = NULL);
 
-    void bookmarkAdd(int lineno) const
-	{
+    void bookmarkAdd(int lineno) const {
 		if (lineno == -1)
 			lineno = static_cast<int32_t>(_pEditView->getCurrentLineNumber());
 		if (!bookmarkPresent(lineno))
 			_pEditView->execute(SCI_MARKERADD, lineno, MARK_BOOKMARK);
 	}
 
-    void bookmarkDelete(int lineno) const
-	{
+    void bookmarkDelete(int lineno) const {
 		if (lineno == -1)
 			lineno = static_cast<int32_t>(_pEditView->getCurrentLineNumber());
 		while (bookmarkPresent(lineno))
 			_pEditView->execute(SCI_MARKERDELETE, lineno, MARK_BOOKMARK);
 	}
 
-    bool bookmarkPresent(int lineno) const
-	{
+    bool bookmarkPresent(int lineno) const {
 		if (lineno == -1)
 			lineno = static_cast<int32_t>(_pEditView->getCurrentLineNumber());
 		LRESULT state = _pEditView->execute(SCI_MARKERGET, lineno);
 		return ((state & (1 << MARK_BOOKMARK)) != 0);
 	}
 
-    void bookmarkToggle(int lineno) const
-	{
+    void bookmarkToggle(int lineno) const {
 		if (lineno == -1)
 			lineno = static_cast<int32_t>(_pEditView->getCurrentLineNumber());
 
@@ -535,8 +540,7 @@ private:
 	}
 
     void bookmarkNext(bool forwardScan);
-	void bookmarkClearAll() const
-	{
+	void bookmarkClearAll() const {
 		_pEditView->execute(SCI_MARKERDELETEALL, MARK_BOOKMARK);
 	}
 
@@ -588,8 +592,7 @@ private:
 	bool dumpFiles(const TCHAR * outdir, const TCHAR * fileprefix = TEXT(""));	//helper func
 	void drawTabbarColoursFromStylerArray();
 
-	std::vector<generic_string> loadCommandlineParams(const TCHAR * commandLine, const CmdLineParams * pCmdParams)
-	{
+	std::vector<generic_string> loadCommandlineParams(const TCHAR * commandLine, const CmdLineParams * pCmdParams) {
 		const CmdLineParamsDTO dto = CmdLineParamsDTO::FromCmdLineParams(*pCmdParams);
 		return loadCommandlineParams(commandLine, &dto);
 	}
@@ -619,8 +622,7 @@ private:
 	static bool deleteForward(ScintillaEditView *pCurrentView, BufferID targetBufID);
 	static bool selectBack(ScintillaEditView *pCurrentView, BufferID targetBufID);
 
-	static int getRandomNumber(int rangeMax = -1)
-	{
+	static int getRandomNumber(int rangeMax = -1) {
 		int randomNumber = rand();
 		if (rangeMax == -1)
 			return randomNumber;
